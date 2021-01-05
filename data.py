@@ -2,10 +2,11 @@ import os
 import random
 import pickle
 import numpy as np
-import torch 
+import torch
 import scipy.io
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 def _fetch(path, name):
     if name == 'train':
@@ -30,6 +31,7 @@ def _fetch(path, name):
         counts_2 = scipy.io.loadmat(count_2_file)['counts'].squeeze()
         return {'tokens': tokens, 'counts': counts, 'tokens_1': tokens_1, 'counts_1': counts_1, 'tokens_2': tokens_2, 'counts_2': counts_2}
     return {'tokens': tokens, 'counts': counts}
+
 
 def _fetch_temporal(path, name):
     if name == 'train':
@@ -56,26 +58,28 @@ def _fetch_temporal(path, name):
         counts_1 = scipy.io.loadmat(count_1_file)['counts'].squeeze()
         tokens_2 = scipy.io.loadmat(token_2_file)['tokens'].squeeze()
         counts_2 = scipy.io.loadmat(count_2_file)['counts'].squeeze()
-        return {'tokens': tokens, 'counts': counts, 'times': times, 
-                    'tokens_1': tokens_1, 'counts_1': counts_1, 
-                        'tokens_2': tokens_2, 'counts_2': counts_2} 
+        return {'tokens': tokens, 'counts': counts, 'times': times,
+                    'tokens_1': tokens_1, 'counts_1': counts_1,
+                        'tokens_2': tokens_2, 'counts_2': counts_2}
     return {'tokens': tokens, 'counts': counts, 'times': times}
 
+
 def get_data(path, temporal=False):
-    ### load vocabulary
+    # load vocabulary
     with open(os.path.join(path, 'vocab.pkl'), 'rb') as f:
         vocab = pickle.load(f)
 
     if not temporal:
-        train = _fetch(path, 'train')
+        train = _fetch(path, 'train')  # bag of tokens without time stamp
         valid = _fetch(path, 'valid')
         test = _fetch(path, 'test')
     else:
-        train = _fetch_temporal(path, 'train')
+        train = _fetch_temporal(path, 'train')  # bag of tokens with time stamp
         valid = _fetch_temporal(path, 'valid')
         test = _fetch_temporal(path, 'test')
 
     return vocab, train, valid, test
+
 
 def get_batch(tokens, counts, ind, vocab_size, emsize=300, temporal=False, times=None):
     """fetch input data by batch."""
@@ -90,7 +94,7 @@ def get_batch(tokens, counts, ind, vocab_size, emsize=300, temporal=False, times
             timestamp = times[doc_id]
             times_batch[i] = timestamp
         L = count.shape[1]
-        if len(doc) == 1: 
+        if len(doc) == 1:
             doc = [doc.squeeze()]
             count = [count.squeeze()]
         else:
@@ -105,9 +109,10 @@ def get_batch(tokens, counts, ind, vocab_size, emsize=300, temporal=False, times
         return data_batch, times_batch
     return data_batch
 
+
 def get_rnn_input(tokens, counts, times, num_times, vocab_size, num_docs):
     indices = torch.randperm(num_docs)
-    indices = torch.split(indices, 1000) 
+    indices = torch.split(indices, 1000)
     rnn_input = torch.zeros(num_times, vocab_size).to(device)
     cnt = torch.zeros(num_times, ).to(device)
     for idx, ind in enumerate(indices):

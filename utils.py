@@ -116,9 +116,21 @@ def onehot(data, min_length):
     return list(np.bincount(data, minlength=min_length))
 
 def nearest_neighbors(word, embeddings, vocab, num_words):
-    vectors = embeddings.cpu().numpy() 
+    #vectors = embeddings.cpu().numpy()
+    vectors = embeddings.cpu().detach().numpy() # Can't call numpy() on Variable that requires grad. Use var.detach().numpy() instead.
+    # after adding detach:
+    # Visualize word embeddings ...
+    # Traceback (most recent call last):
+    #   File "main.py", line 482, in <module>
+    #     visualize()
+    #   File "main.py", line 282, in visualize
+    #     word, nearest_neighbors(word, embeddings, vocab, args.num_words)))
+    #   File "/Users/qmn203/Google Drive/DETM/DETM/utils.py", line 120, in nearest_neighbors
+    #     index = vocab.index(word)
+    # ValueError: 'economic' is not in list
     index = vocab.index(word)
-    query = embeddings[index].cpu().numpy() 
+    #query = embeddings[index].cpu().numpy()
+    query = embeddings[index].cpu().detach().numpy() # quynhneo
     ranks = vectors.dot(query).squeeze()
     denom = query.T.dot(query).squeeze()
     denom = denom * np.sum(vectors**2, 1)

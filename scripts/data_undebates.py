@@ -7,14 +7,47 @@ from scipy import sparse
 import itertools
 from scipy.io import savemat, loadmat
 import string
-import os
+import os, json
+import timeit
+from typing import List
+from nltk.stem import WordNetLemmatizer
+
+
+def preprocess(document: str, stopwords: List[str]) -> List[str]:
+    """
+    INPUT: a string
+    OUTPUT: a list of token
+
+        tokenize, lower case,
+        remove punctuation: '!"#$%&\'()*+,./:;<=>?@[\\]^_`{|}~', and new line character
+        remove stop words from provided list and words with less than 1 characters from document
+    note:
+        latex expressions are not processed
+        hyphens (e.g. kaluza-klein), and numbers (e.g. 3D), and accent are allowed
+    """
+    result = []
+
+    lemma = WordNetLemmatizer()
+
+    for token in document.split():
+        token = token.lower().replace("’", "").replace("'", "").replace("\n", " ").translate(
+            str.maketrans('', '', '!"#$%&\'()*+,./:;<=>?@[\\]^_`{|}~'))
+
+        if len(token) > 1 and token.islower() and token not in stopwords:
+            token = lemma.lemmatize(token, pos=get_wordnet_pos(token))  # plural-> singular, Verb-ing to verb, etc
+            # doesn't work for all words
+            result.append(token)
+
+    return result
+
 
 # Maximum / minimum document frequency
 max_df = 0.7
-min_df = 10  # choose desired value for min_df
+min_df = 30  # choose desired value for min_df. change from 100 to 30 to match paper
 
 # Data type
-flag_split_by_paragraph = True  # whether to split documents by paragraph
+flag_split_by_paragraph = False  # whether to split documents by paragraph
+start_time = timeit.default_timer()
 
 # Read stopwords
 with open('stops.txt', 'r') as f:
@@ -22,21 +55,54 @@ with open('stops.txt', 'r') as f:
 
 # Read raw data
 print('reading raw data...')
-with open('./raw/un-general-debates.csv') as csv_file:
-    csv_reader = csv.reader(csv_file, delimiter=',', quotechar='"')
-    line_count = 0
-    all_timestamps_ini = []
-    all_docs_ini = []
-    for row in csv_reader:
-        # skip header
-        if(line_count>0):
-            all_timestamps_ini.append(row[1])
-            all_docs_ini.append(row[3])
+meta_data_file = '../../arxiv-metadata-oai-snapshot.json'
+file = open(meta_data_file, 'r')
+line_count = 0
+all_timestamps_ini = []
+all_docs_ini = []
+for line in file:  # total 1.7m line
+    try:
+        #line_view = json.loads(file.readline())  # view object of the json line
+        line_view = json.loads(line)  # view object of the json line
+        #print(line_view['update_date'][0:4])
+        #print(line_view['abstract'])
+        #print(line_view['categories'])
+    except:
+        print('bad line', line_count)  # 896728
+        print(line_view)
         line_count += 1
+        continue
+
+    if 'hep-ph' in line_view['categories']:  # select only hep-ph categories
+        #print(line_view['categories'])
+        all_timestamps_ini.append(line_view['update_date'][0:4])  # get the year only in yyyy-mm-dd format
+        # return list of year string ['1989','1989',...]
+        all_docs_ini.append(line_view['abstract'])  # list of document strings,  ["it is indeed ...", ...]
+        #print(line_count)
+        line_count += 1
+        #if line_count > 88:
+        #    break
+
+#num_lines = sum(1 for line in file)
+print("number of line is : ", line_count)
+file.close()
+
+# with open('./raw/un-general-debates.csv','r') as csv_file:
+#     csv_reader = csv.reader(csv_file, delimiter=',', quotechar='"')
+#     line_count = 0
+#     all_timestamps_ini = []
+#     all_docs_ini = []
+#     for row in csv_reader:
+#         # skip header
+#         if(line_count>0):
+#             all_timestamps_ini.append(row[1])  # list of year string ['1989','1989',...]
+#             all_docs_ini.append(row[3]) # list of document strings,  ["it is indeed ...", ...]
+#         line_count += 1
+
 
 if flag_split_by_paragraph:
     print('splitting by paragraphs...')
-    
+
     docs = []
     timestamps = []
     for dd, doc in enumerate(all_docs_ini):
@@ -64,12 +130,13 @@ with open(out_filename, 'w') as f:
     for line in docs:
         f.write(line + '\n')
 
-# Create count vectorizer
+
+#  Create count vectorizer
 print('counting document frequency of words...')
 cvectorizer = CountVectorizer(min_df=min_df, max_df=max_df, stop_words=None)
 cvz = cvectorizer.fit_transform(docs).sign()
 
-# Get vocabulary
+#  Get vocabulary
 print('building the vocabulary...')
 sum_counts = cvz.sum(axis=0)
 v_size = sum_counts.shape[1]
@@ -148,6 +215,7 @@ def remove_by_threshold(in_docs, in_timestamps, thr):
             out_docs.append(doc)
             out_timestamps.append(in_timestamps[ii])
     return out_docs, out_timestamps
+
 
 docs_tr, timestamps_tr = remove_empty(docs_tr, timestamps_tr)
 docs_ts, timestamps_ts = remove_empty(docs_ts, timestamps_ts)
@@ -238,7 +306,7 @@ del doc_indices_va
 # Write files for LDA C++ code
 def write_lda_file(filename, timestamps_in, time_list_in, bow_in):
     idxSort = np.argsort(timestamps_in)
-    
+
     with open(filename, "w") as f:
         for row in idxSort:
             x = bow_in.getrow(row)
@@ -249,13 +317,13 @@ def write_lda_file(filename, timestamps_in, time_list_in, bow_in):
             for ii, dd in zip(x.indices, x.data):
                 f.write(' ' + str(ii) + ':' + str(dd))
             f.write('\n')
-            
+
     with open(filename.replace("-mult", "-seq"), "w") as f:
         f.write(str(len(time_list_in)) + '\n')
         for idx_t, _ in enumerate(time_list_in):
             n_elem = len([t for t in timestamps_in if t==idx_t])
             f.write(str(n_elem) + '\n')
-            
+
 
 path_save = './split_paragraph_' + str(flag_split_by_paragraph) + '/min_df_' + str(min_df) + '/'
 if not os.path.isdir(path_save):
@@ -285,9 +353,9 @@ with open(path_save + 'timestamps.pkl', 'wb') as f:
     pickle.dump(time_list, f)
 
 # Save timestamps alone
-savemat(path_save + 'bow_tr_timestamps', {'timestamps': timestamps_tr}, do_compression=True)
-savemat(path_save + 'bow_ts_timestamps', {'timestamps': timestamps_ts}, do_compression=True)
-savemat(path_save + 'bow_va_timestamps', {'timestamps': timestamps_va}, do_compression=True)
+savemat(path_save + 'bow_tr_timestamps.mat', {'timestamps': timestamps_tr}, do_compression=True)
+savemat(path_save + 'bow_ts_timestamps.mat', {'timestamps': timestamps_ts}, do_compression=True)
+savemat(path_save + 'bow_va_timestamps.mat', {'timestamps': timestamps_va}, do_compression=True)
 
 # Split bow intro token/value pairs
 print('splitting bow intro token/value pairs and saving to disk...')
@@ -298,40 +366,43 @@ def split_bow(bow_in, n_docs):
     return indices, counts
 
 bow_tr_tokens, bow_tr_counts = split_bow(bow_tr, n_docs_tr)
-savemat(path_save + 'bow_tr_tokens', {'tokens': bow_tr_tokens}, do_compression=True)
-savemat(path_save + 'bow_tr_counts', {'counts': bow_tr_counts}, do_compression=True)
+savemat(path_save + 'bow_tr_tokens.mat', {'tokens': bow_tr_tokens}, do_compression=True)  # quynhneo: add .mat extension
+savemat(path_save + 'bow_tr_counts.mat', {'counts': bow_tr_counts}, do_compression=True)  # quynhneo: add .mat extension
 del bow_tr
 del bow_tr_tokens
 del bow_tr_counts
 
 bow_ts_tokens, bow_ts_counts = split_bow(bow_ts, n_docs_ts)
-savemat(path_save + 'bow_ts_tokens', {'tokens': bow_ts_tokens}, do_compression=True)
-savemat(path_save + 'bow_ts_counts', {'counts': bow_ts_counts}, do_compression=True)
+savemat(path_save + 'bow_ts_tokens.mat', {'tokens': bow_ts_tokens}, do_compression=True)
+savemat(path_save + 'bow_ts_counts.mat', {'counts': bow_ts_counts}, do_compression=True)
 del bow_ts
 del bow_ts_tokens
 del bow_ts_counts
 
 bow_ts_h1_tokens, bow_ts_h1_counts = split_bow(bow_ts_h1, n_docs_ts_h1)
-savemat(path_save + 'bow_ts_h1_tokens', {'tokens': bow_ts_h1_tokens}, do_compression=True)
-savemat(path_save + 'bow_ts_h1_counts', {'counts': bow_ts_h1_counts}, do_compression=True)
+savemat(path_save + 'bow_ts_h1_tokens.mat', {'tokens': bow_ts_h1_tokens}, do_compression=True)
+savemat(path_save + 'bow_ts_h1_counts.mat', {'counts': bow_ts_h1_counts}, do_compression=True)
 del bow_ts_h1
 del bow_ts_h1_tokens
 del bow_ts_h1_counts
 
 bow_ts_h2_tokens, bow_ts_h2_counts = split_bow(bow_ts_h2, n_docs_ts_h2)
-savemat(path_save + 'bow_ts_h2_tokens', {'tokens': bow_ts_h2_tokens}, do_compression=True)
-savemat(path_save + 'bow_ts_h2_counts', {'counts': bow_ts_h2_counts}, do_compression=True)
+savemat(path_save + 'bow_ts_h2_tokens.mat', {'tokens': bow_ts_h2_tokens}, do_compression=True)
+savemat(path_save + 'bow_ts_h2_counts.mat', {'counts': bow_ts_h2_counts}, do_compression=True)
 del bow_ts_h2
 del bow_ts_h2_tokens
 del bow_ts_h2_counts
 
 bow_va_tokens, bow_va_counts = split_bow(bow_va, n_docs_va)
-savemat(path_save + 'bow_va_tokens', {'tokens': bow_va_tokens}, do_compression=True)
-savemat(path_save + 'bow_va_counts', {'counts': bow_va_counts}, do_compression=True)
+savemat(path_save + 'bow_va_tokens.mat', {'tokens': bow_va_tokens}, do_compression=True)
+savemat(path_save + 'bow_va_counts.mat', {'counts': bow_va_counts}, do_compression=True)
 del bow_va
 del bow_va_tokens
 del bow_va_counts
 
 print('Data ready !!')
 print('*************')
+
+stop_time = timeit.default_timer()
+print("run time {}".format((stop_time-start_time)/3600))
 

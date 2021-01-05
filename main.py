@@ -4,17 +4,19 @@ from __future__ import print_function
 
 import argparse
 import torch
-import pickle 
-import numpy as np 
-import os 
-import math 
-import random 
+import pickle
+import numpy as np
+import os
+import math
+import timeit
+import random
 import sys
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
 import seaborn as sns
 import scipy.io
 
-import data 
+
+import data
 
 from sklearn.decomposition import PCA
 from torch import nn, optim
@@ -23,37 +25,39 @@ from torch.nn import functional as F
 from detm import DETM
 from utils import nearest_neighbors, get_topic_coherence
 
+start_time = timeit.default_timer()
+
 parser = argparse.ArgumentParser(description='The Embedded Topic Model')
 
 ### data and file related arguments
 parser.add_argument('--dataset', type=str, default='un', help='name of corpus')
-parser.add_argument('--data_path', type=str, default='un/', help='directory containing data')
+parser.add_argument('--data_path', type=str, default='scripts/split_paragraph_False/', help='directory containing data')
 parser.add_argument('--emb_path', type=str, default='skipgram/embeddings.txt', help='directory containing embeddings')
 parser.add_argument('--save_path', type=str, default='./results', help='path to save results')
-parser.add_argument('--batch_size', type=int, default=1000, help='number of documents in a batch for training')
-parser.add_argument('--min_df', type=int, default=100, help='to get the right data..minimum document frequency')
+parser.add_argument('--batch_size', type=int, default=200, help='number of documents in a batch for training') #200
+parser.add_argument('--min_df', type=int, default=30, help='to get the right data..minimum document frequency')
 
 ### model-related arguments
-parser.add_argument('--num_topics', type=int, default=50, help='number of topics')
+parser.add_argument('--num_topics', type=int, default=50, help='number of topics')  # 50
 parser.add_argument('--rho_size', type=int, default=300, help='dimension of rho')
 parser.add_argument('--emb_size', type=int, default=300, help='dimension of embeddings')
-parser.add_argument('--t_hidden_size', type=int, default=800, help='dimension of hidden space of q(theta)')
+parser.add_argument('--t_hidden_size', type=int, default=800, help='dimension of hidden space of q(theta)')  # 800
 parser.add_argument('--theta_act', type=str, default='relu', help='tanh, softplus, relu, rrelu, leakyrelu, elu, selu, glu)')
 parser.add_argument('--train_embeddings', type=int, default=1, help='whether to fix rho or train it')
-parser.add_argument('--eta_nlayers', type=int, default=3, help='number of layers for eta')
-parser.add_argument('--eta_hidden_size', type=int, default=200, help='number of hidden units for rnn')
+parser.add_argument('--eta_nlayers', type=int, default=4, help='number of layers for eta')  # 4
+parser.add_argument('--eta_hidden_size', type=int, default=400, help='number of hidden units for rnn')  # 400
 parser.add_argument('--delta', type=float, default=0.005, help='prior variance')
 
 ### optimization-related arguments
-parser.add_argument('--lr', type=float, default=0.005, help='learning rate')
+parser.add_argument('--lr', type=float, default=0.001, help='learning rate')  # 0.001
 parser.add_argument('--lr_factor', type=float, default=4.0, help='divide learning rate by this')
-parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train')
+parser.add_argument('--epochs', type=int, default=3, help='number of epochs to train')  # 400
 parser.add_argument('--mode', type=str, default='train', help='train or eval model')
 parser.add_argument('--optimizer', type=str, default='adam', help='choice of optimizer')
 parser.add_argument('--seed', type=int, default=2019, help='random seed (default: 1)')
-parser.add_argument('--enc_drop', type=float, default=0.0, help='dropout rate on encoder')
+parser.add_argument('--enc_drop', type=float, default=0.1, help='dropout rate on encoder')
 parser.add_argument('--eta_dropout', type=float, default=0.0, help='dropout rate on rnn for eta')
-parser.add_argument('--clip', type=float, default=0.0, help='gradient clipping')
+parser.add_argument('--clip', type=float, default=2.0, help='gradient clipping')
 parser.add_argument('--nonmono', type=int, default=10, help='number of bad hits allowed')
 parser.add_argument('--wdecay', type=float, default=1.2e-6, help='some l2 regularization')
 parser.add_argument('--anneal_lr', type=int, default=0, help='whether to anneal the learning rate or not')
@@ -63,7 +67,7 @@ parser.add_argument('--bow_norm', type=int, default=1, help='normalize the bows 
 parser.add_argument('--num_words', type=int, default=20, help='number of words for topic viz')
 parser.add_argument('--log_interval', type=int, default=10, help='when to log training')
 parser.add_argument('--visualize_every', type=int, default=1, help='when to visualize results')
-parser.add_argument('--eval_batch_size', type=int, default=1000, help='input batch size for evaluation')
+parser.add_argument('--eval_batch_size', type=int, default=1000, help='input batch size for evaluation')  # 1000
 parser.add_argument('--load_from', type=str, default='', help='the name of the ckpt to eval from')
 parser.add_argument('--tc', type=int, default=0, help='whether to compute tc or not')
 
@@ -77,16 +81,16 @@ np.random.seed(args.seed)
 torch.backends.cudnn.deterministic = True
 torch.manual_seed(args.seed)
 
-## get data
+# get data
 # 1. vocabulary
-print('Getting vocabulary ...')
+print('Getting vocabulary ...', flush=True)
 data_file = os.path.join(args.data_path, 'min_df_{}'.format(args.min_df))
-vocab, train, valid, test = data.get_data(data_file, temporal=True)
+vocab, train, valid, test = data.get_data(data_file, temporal=True)  # splitting abstracts into train, valid, test
 vocab_size = len(vocab)
-args.vocab_size = vocab_size
+args.vocab_size = vocab_size  # 10113 for hep-ph
 
 # 1. training data
-print('Getting training data ...')
+print('Getting training data ...', flush=True)
 train_tokens = train['tokens']
 train_counts = train['counts']
 train_times = train['times']
@@ -96,7 +100,7 @@ train_rnn_inp = data.get_rnn_input(
     train_tokens, train_counts, train_times, args.num_times, args.vocab_size, args.num_docs_train)
 
 # 2. dev set
-print('Getting validation data ...')
+print('Getting validation data ...', flush=True)
 valid_tokens = valid['tokens']
 valid_counts = valid['counts']
 valid_times = valid['times']
@@ -105,7 +109,7 @@ valid_rnn_inp = data.get_rnn_input(
     valid_tokens, valid_counts, valid_times, args.num_times, args.vocab_size, args.num_docs_valid)
 
 # 3. test data
-print('Getting testing data ...')
+print('Getting testing data ...',flush=True)
 test_tokens = test['tokens']
 test_counts = test['counts']
 test_times = test['times']
@@ -127,32 +131,46 @@ args.num_docs_test_2 = len(test_2_tokens)
 test_2_rnn_inp = data.get_rnn_input(
     test_2_tokens, test_2_counts, test_2_times, args.num_times, args.vocab_size, args.num_docs_test)
 
-## get embeddings 
-print('Getting embeddings ...')
+## get embeddings
+print('Getting embeddings ...', flush=True)
 emb_path = args.emb_path
-vect_path = os.path.join(args.data_path.split('/')[0], 'embeddings.pkl')   
-vectors = {}
+vect_path = os.path.join(args.data_path.split('/')[0], 'embeddings.pkl')  # unused
+vectors = {}  # could be less than vocab_size elements if not all vocab is in embedding
+bad_line_count=0
+
+#  get vector for all words in vocab
 with open(emb_path, 'rb') as f:
     for l in f:
         line = l.decode().split()
         word = line[0]
-        if word in vocab:
-            vect = np.array(line[1:]).astype(np.float)
-            vectors[word] = vect
-embeddings = np.zeros((vocab_size, args.emb_size))
+        if word in vocab:  # if word from word2vec list in vocab.pkl
+            try:  # quynhneo: because sometimes word2vec fail
+                vect = np.array(line[1:]).astype(np.float)
+                vectors[word] = vect
+            except:
+                print('bad line \n', line)
+                bad_line_count += 1
+
+print('total bad embedding vectors {}'.format(bad_line_count), flush=True)
+
+embeddings = np.zeros((vocab_size, args.emb_size))  # 10113 x 300
 words_found = 0
 for i, word in enumerate(vocab):
-    try: 
-        embeddings[i] = vectors[word]
-        words_found += 1
-    except KeyError:
+    try:
+        embeddings[i] = vectors[word]  # each row is a vector
+        words_found += 1  # currently 5992! that's bad. half of the embedding are random.
+    except KeyError:  # if some element of vocab has not been embedded
         embeddings[i] = np.random.normal(scale=0.6, size=(args.emb_size, ))
 embeddings = torch.from_numpy(embeddings).to(device)
 args.embeddings_dim = embeddings.size()
+if words_found/vocab_size < 0.95:  # currently 5992! that's bad. half of the embedding are random
+    print('low embedding')
+    raise
 
 print('\n')
 print('=*'*100)
-print('Training a Dynamic Embedded Topic Model on {} with the following settings: {}'.format(args.dataset.upper(), args))
+print('Training a Dynamic Embedded Topic Model on {} with the following settings: {}'.format(args.dataset.upper(), args)
+      , flush=True)
 print('=*'*100)
 
 ## define checkpoint
@@ -162,9 +180,9 @@ if not os.path.exists(args.save_path):
 if args.mode == 'eval':
     ckpt = args.load_from
 else:
-    ckpt = os.path.join(args.save_path, 
+    ckpt = os.path.join(args.save_path,
         'detm_{}_K_{}_Htheta_{}_Optim_{}_Clip_{}_ThetaAct_{}_Lr_{}_Bsz_{}_RhoSize_{}_L_{}_minDF_{}_trainEmbeddings_{}'.format(
-        args.dataset, args.num_topics, args.t_hidden_size, args.optimizer, args.clip, args.theta_act, 
+        args.dataset, args.num_topics, args.t_hidden_size, args.optimizer, args.clip, args.theta_act,
             args.lr, args.batch_size, args.rho_size, args.eta_nlayers, args.min_df, args.train_embeddings))
 
 ## define model and optimizer
@@ -202,7 +220,7 @@ def train(epoch):
     acc_kl_alpha_loss = 0
     cnt = 0
     indices = torch.randperm(args.num_docs_train)
-    indices = torch.split(indices, args.batch_size) 
+    indices = torch.split(indices, args.batch_size)
     for idx, ind in enumerate(indices):
         optimizer.zero_grad()
         model.zero_grad()
@@ -228,24 +246,24 @@ def train(epoch):
         cnt += 1
 
         if idx % args.log_interval == 0 and idx > 0:
-            cur_loss = round(acc_loss / cnt, 2) 
-            cur_nll = round(acc_nll / cnt, 2) 
-            cur_kl_theta = round(acc_kl_theta_loss / cnt, 2) 
-            cur_kl_eta = round(acc_kl_eta_loss / cnt, 2) 
-            cur_kl_alpha = round(acc_kl_alpha_loss / cnt, 2) 
+            cur_loss = round(acc_loss / cnt, 2)
+            cur_nll = round(acc_nll / cnt, 2)
+            cur_kl_theta = round(acc_kl_theta_loss / cnt, 2)
+            cur_kl_eta = round(acc_kl_eta_loss / cnt, 2)
+            cur_kl_alpha = round(acc_kl_alpha_loss / cnt, 2)
             lr = optimizer.param_groups[0]['lr']
             print('Epoch: {} .. batch: {}/{} .. LR: {} .. KL_theta: {} .. KL_eta: {} .. KL_alpha: {} .. Rec_loss: {} .. NELBO: {}'.format(
                 epoch, idx, len(indices), lr, cur_kl_theta, cur_kl_eta, cur_kl_alpha, cur_nll, cur_loss))
-    
-    cur_loss = round(acc_loss / cnt, 2) 
-    cur_nll = round(acc_nll / cnt, 2) 
-    cur_kl_theta = round(acc_kl_theta_loss / cnt, 2) 
-    cur_kl_eta = round(acc_kl_eta_loss / cnt, 2) 
-    cur_kl_alpha = round(acc_kl_alpha_loss / cnt, 2) 
+
+    cur_loss = round(acc_loss / cnt, 2)
+    cur_nll = round(acc_nll / cnt, 2)
+    cur_kl_theta = round(acc_kl_theta_loss / cnt, 2)
+    cur_kl_eta = round(acc_kl_eta_loss / cnt, 2)
+    cur_kl_alpha = round(acc_kl_alpha_loss / cnt, 2)
     lr = optimizer.param_groups[0]['lr']
     print('*'*100)
     print('Epoch----->{} .. LR: {} .. KL_theta: {} .. KL_eta: {} .. KL_alpha: {} .. Rec_loss: {} .. NELBO: {}'.format(
-            epoch, lr, cur_kl_theta, cur_kl_eta, cur_kl_alpha, cur_nll, cur_loss))
+            epoch, lr, cur_kl_theta, cur_kl_eta, cur_kl_alpha, cur_nll, cur_loss),flush=True)
     print('*'*100)
 
 def visualize():
@@ -254,7 +272,7 @@ def visualize():
     model.eval()
     with torch.no_grad():
         alpha = model.mu_q_alpha
-        beta = model.get_beta(alpha) 
+        beta = model.get_beta(alpha)
         print('beta: ', beta.size())
         print('\n')
         print('#'*100)
@@ -267,11 +285,12 @@ def visualize():
                 top_words = list(gamma.cpu().numpy().argsort()[-args.num_words+1:][::-1])
                 topic_words = [vocab[a] for a in top_words]
                 topics_words.append(' '.join(topic_words))
-                print('Topic {} .. Time: {} ===> {}'.format(k, t, topic_words)) 
+                print('Topic {} .. Time: {} ===> {}'.format(k, t, topic_words))
 
         print('\n')
         print('Visualize word embeddings ...')
-        queries = ['economic', 'assembly', 'security', 'management', 'debt', 'rights',  'africa']
+        #queries = ['economic', 'assembly', 'security', 'management', 'debt', 'rights',  'africa']
+        queries =  ['woman', 'gender', 'man', 'mankind', 'humankind'] #quynhneo what is this?
         try:
             embeddings = model.rho.weight  # Vocab_size x E
         except:
@@ -284,8 +303,8 @@ def visualize():
 
         # print('\n')
         # print('Visualize word evolution ...')
-        # topic_0 = None ### k 
-        # queries_0 = ['woman', 'gender', 'man', 'mankind', 'humankind'] ### v 
+        # topic_0 = None ### k
+        # queries_0 = ['woman', 'gender', 'man', 'mankind', 'humankind'] ### v
 
         # topic_1 = None
         # queries_1 = ['africa', 'colonial', 'racist', 'democratic']
@@ -329,7 +348,7 @@ def get_theta(eta, bows):
         q_theta = model.q_theta(inp)
         mu_theta = model.mu_q_theta(q_theta)
         theta = F.softmax(mu_theta, dim=-1)
-        return theta    
+        return theta
 
 def get_completion_ppl(source):
     """Returns document completion perplexity.
@@ -375,7 +394,7 @@ def get_completion_ppl(source):
             print('{} PPL: {}'.format(source.upper(), ppl_all))
             print('*'*100)
             return ppl_all
-        else: 
+        else:
             indices = torch.split(torch.tensor(range(args.num_docs_test)), args.eval_batch_size)
             tokens_1 = test_1_tokens
             counts_1 = test_1_counts
@@ -440,7 +459,7 @@ def get_topic_quality():
     model.eval()
     with torch.no_grad():
         alpha = model.mu_q_alpha
-        beta = model.get_beta(alpha) 
+        beta = model.get_beta(alpha)
         print('beta: ', beta.size())
 
         print('\n')
@@ -477,9 +496,11 @@ if args.mode == 'train':
     best_val_ppl = 1e9
     all_val_ppls = []
     for epoch in range(1, args.epochs):
+        print('-------------epoch: ', epoch,flush=True)  # quynhneo
         train(epoch)
         if epoch % args.visualize_every == 0:
-            visualize()
+            # visualize()
+            pass
         val_ppl = get_completion_ppl('val')
         print('val_ppl: ', val_ppl)
         if val_ppl < best_val_ppl:
@@ -498,24 +519,25 @@ if args.mode == 'train':
     model = model.to(device)
     model.eval()
     with torch.no_grad():
-        print('saving topic matrix beta...')
+        print('saving topic matrix beta...', flush=True)
         alpha = model.mu_q_alpha
         beta = model.get_beta(alpha).cpu().numpy()
         scipy.io.savemat(ckpt+'_beta.mat', {'values': beta}, do_compression=True)
         if args.train_embeddings:
             print('saving word embedding matrix rho...')
-            rho = model.rho.weight.cpu().numpy()
+            #rho = model.rho.weight.cpu().numpy()
+            rho = model.rho.weight.cpu().detach().numpy()  # quynhneo fix error RuntimeError: Can't call numpy() on Variable that requires grad. Use var.detach().numpy() instead.
             scipy.io.savemat(ckpt+'_rho.mat', {'values': rho}, do_compression=True)
-        print('computing validation perplexity...')
+        print('computing validation perplexity...', flush=True)
         val_ppl = get_completion_ppl('val')
         print('computing test perplexity...')
         test_ppl = get_completion_ppl('test')
-else: 
+else:
     with open(ckpt, 'rb') as f:
         model = torch.load(f)
     model = model.to(device)
-        
-    print('saving alpha...')
+
+    print('saving alpha...', flush=True)
     with torch.no_grad():
         alpha = model.mu_q_alpha.cpu().numpy()
         scipy.io.savemat(ckpt+'_alpha.mat', {'values': alpha}, do_compression=True)
@@ -526,5 +548,9 @@ else:
     test_ppl = get_completion_ppl('test')
     print('computing topic coherence and topic diversity...')
     get_topic_quality()
-    print('visualizing topics and embeddings...')
-    visualize()
+    #print('visualizing topics and embeddings...')
+    # visualize()
+
+stop_time = timeit.default_timer()
+print("run time {}".format((stop_time-start_time)/3600))
+
