@@ -12,7 +12,7 @@ We modify so that it can process the meta data json file contains arxiv abstract
 
 New file: `requirements.txt`.
 
-## Preliminary results
+## Results
 The plot below shows results for DETM on [`hep-ph`](https://arxiv.org/archive/hep-ph) (high energy physics phenomenology) category. Assuming there are 50 topics, the 6 most meaningful ones were  manually. For each topics, probabilities of some top words are plotted against time (2007-2020). 
 For example, topic 46 shows the increase in `higgs` coinciding with the discovery of Higgs boson in 2012.
 
