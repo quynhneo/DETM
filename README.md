@@ -4,11 +4,16 @@ We modify the code to train on abstracts of papers from arxiv.org.
 
 In `main.py`:
 
-We try to match the settings from Dieng's paper (https://arxiv.org/abs/1907.05545), fix run time errors, add comments.
+  We try to match the settings from Dieng's paper (https://arxiv.org/abs/1907.05545), fix run time errors, add comments.
+  We also added a warning when the vocabulary is not prefitted enough (this is important). 
 
 In `scripts/data_undebates`:
 
-We modify so that it can process the meta data json file contains arxiv abstracts, with the option to select a category (default category: high energy physics phenomenonlogy `hep-ph`).
+  We modify so that it can process the meta data json file contains arxiv abstracts, with the option to select a category (default category: high energy physics phenomenonlogy `hep-ph`).
+
+In `plot_word_evolution.py`:
+
+  We refactorized the code to make it clearer. This script is not plug and play, many lines must be hard-coded. 
 
 New file: `requirements.txt`.
 
