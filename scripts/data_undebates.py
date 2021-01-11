@@ -9,41 +9,14 @@ from scipy.io import savemat, loadmat
 import string
 import os, json
 import timeit
-from typing import List
-from nltk.stem import WordNetLemmatizer
-
-
-def preprocess(document: str, stopwords: List[str]) -> List[str]:
-    """
-    INPUT: a string
-    OUTPUT: a list of token
-
-        tokenize, lower case,
-        remove punctuation: '!"#$%&\'()*+,./:;<=>?@[\\]^_`{|}~', and new line character
-        remove stop words from provided list and words with less than 1 characters from document
-    note:
-        latex expressions are not processed
-        hyphens (e.g. kaluza-klein), and numbers (e.g. 3D), and accent are allowed
-    """
-    result = []
-
-    lemma = WordNetLemmatizer()
-
-    for token in document.split():
-        token = token.lower().replace("’", "").replace("'", "").replace("\n", " ").translate(
-            str.maketrans('', '', '!"#$%&\'()*+,./:;<=>?@[\\]^_`{|}~'))
-
-        if len(token) > 1 and token.islower() and token not in stopwords:
-            token = lemma.lemmatize(token, pos=get_wordnet_pos(token))  # plural-> singular, Verb-ing to verb, etc
-            # doesn't work for all words
-            result.append(token)
-
-    return result
-
+from itertools import repeat
+from arxivtools import preprocessing # private package from git
+import multiprocessing
+from functools import partial
 
 # Maximum / minimum document frequency
 max_df = 0.7
-min_df = 30  # choose desired value for min_df. change from 100 to 30 to match paper
+min_df = 15  # choose desired value for min_df. Dieng paper used 30 for 200,000 docs
 
 # Data type
 flag_split_by_paragraph = False  # whether to split documents by paragraph
@@ -56,36 +29,9 @@ with open('stops.txt', 'r') as f:
 # Read raw data
 print('reading raw data...')
 meta_data_file = '../../arxiv-metadata-oai-snapshot.json'
-file = open(meta_data_file, 'r')
-line_count = 0
-all_timestamps_ini = []
-all_docs_ini = []
-for line in file:  # total 1.7m line
-    try:
-        #line_view = json.loads(file.readline())  # view object of the json line
-        line_view = json.loads(line)  # view object of the json line
-        #print(line_view['update_date'][0:4])
-        #print(line_view['abstract'])
-        #print(line_view['categories'])
-    except:
-        print('bad line', line_count)  # 896728
-        print(line_view)
-        line_count += 1
-        continue
 
-    if 'hep-ph' in line_view['categories']:  # select only hep-ph categories
-        #print(line_view['categories'])
-        all_timestamps_ini.append(line_view['update_date'][0:4])  # get the year only in yyyy-mm-dd format
-        # return list of year string ['1989','1989',...]
-        all_docs_ini.append(line_view['abstract'])  # list of document strings,  ["it is indeed ...", ...]
-        #print(line_count)
-        line_count += 1
-        #if line_count > 88:
-        #    break
-
-#num_lines = sum(1 for line in file)
-print("number of line is : ", line_count)
-file.close()
+# list of abstract, and list of time stamps
+all_docs_ini, all_timestamps_ini = preprocessing.read_meta_data(meta_data_file, 'hep-ph')
 
 # with open('./raw/un-general-debates.csv','r') as csv_file:
 #     csv_reader = csv.reader(csv_file, delimiter=',', quotechar='"')
@@ -117,11 +63,23 @@ else:
 del all_docs_ini
 del all_timestamps_ini
 
-# Remove punctuation
-print('removing punctuation...')
-docs = [[w.lower().replace("’", " ").replace("'", " ").translate(str.maketrans('', '', string.punctuation + "0123456789")) for w in docs[doc].split()] for doc in range(len(docs))]
-docs = [[w for w in docs[doc] if len(w)>1] for doc in range(len(docs))]
-docs = [" ".join(docs[doc]) for doc in range(len(docs))]
+print('preprocessing')
+print('number of cpus: ', multiprocessing.cpu_count())
+print('remove punctuations, and stopwords from list')
+pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+docs = pool.starmap(preprocessing.preprocess, zip(docs, repeat(stops)))  # list of list of words
+pool.close()
+pool.join()
+
+# print('removing low and high document frequency words')
+# docs = preprocessing.frequency_filter(docs, min_df, max_df, multiprocessing.cpu_count())  # list of list of words
+
+print('joining words back into document')
+pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+joiner = partial(" ".join)
+docs = pool.map(joiner, docs)  # list of documents
+pool.close()
+pool.join()
 
 # Write as raw text
 out_filename = './all_docs_splitParagraphs' + str(flag_split_by_paragraph) + '.txt'
@@ -133,16 +91,18 @@ with open(out_filename, 'w') as f:
 
 #  Create count vectorizer
 print('counting document frequency of words...')
-cvectorizer = CountVectorizer(min_df=min_df, max_df=max_df, stop_words=None)
-cvz = cvectorizer.fit_transform(docs).sign()
+cvectorizer = CountVectorizer(min_df=min_df, max_df=max_df, stop_words=None, token_pattern=r"(?u)\b[^\s]+\b")
+# the default token_pattern (?u)\b\w\w+\b would kill hyphenated words like "klein-gordon"
+# (?u)\b[^\s]+\b is unicode, any number of character without space in the middle
+cvz = cvectorizer.fit_transform(docs).sign()  # document term matrix
 
 #  Get vocabulary
 print('building the vocabulary...')
 sum_counts = cvz.sum(axis=0)
-v_size = sum_counts.shape[1]
+v_size = sum_counts.shape[1]  # 12,200
 sum_counts_np = np.zeros(v_size, dtype=int)
 for v in range(v_size):
-    sum_counts_np[v] = sum_counts[0,v]
+    sum_counts_np[v] = sum_counts[0, v]
 word2id = dict([(w, cvectorizer.vocabulary_.get(w)) for w in cvectorizer.vocabulary_])
 id2word = dict([(cvectorizer.vocabulary_.get(w), w) for w in cvectorizer.vocabulary_])
 del cvectorizer
@@ -154,7 +114,7 @@ vocab_aux = [id2word[idx_sort[cc]] for cc in range(v_size)]
 
 # Filter out stopwords (if any)
 vocab_aux = [w for w in vocab_aux if w not in stops]
-print('  vocabulary size after removing stopwords from list: {}'.format(len(vocab_aux)))
+print('  vocabulary size after removing stopwords from list: {}'.format(len(vocab_aux)))  # 12,120
 
 # Create dictionary and inverse dictionary
 vocab = vocab_aux
@@ -181,7 +141,7 @@ idx_permute = np.random.permutation(num_docs).astype(int)
 vocab = list(set([w for idx_d in range(trSize) for w in docs[idx_permute[idx_d]].split() if w in word2id]))
 word2id = dict([(w, j) for j, w in enumerate(vocab)])
 id2word = dict([(j, w) for j, w in enumerate(vocab)])
-print('  vocabulary after removing words not in train: {}'.format(len(vocab)))
+print('  vocabulary after removing words not in train: {}'.format(len(vocab)))  # 12,072
 
 docs_tr = [[word2id[w] for w in docs[idx_permute[idx_d]].split() if w in word2id] for idx_d in range(trSize)]
 timestamps_tr = [time2id[timestamps[idx_permute[idx_d]]] for idx_d in range(trSize)]
@@ -198,6 +158,7 @@ print('  number of documents (valid): {} [this should be equal to {} and {}]'.fo
 # Remove empty documents
 print('removing empty documents...')
 
+
 def remove_empty(in_docs, in_timestamps):
     out_docs = []
     out_timestamps = []
@@ -206,6 +167,7 @@ def remove_empty(in_docs, in_timestamps):
             out_docs.append(doc)
             out_timestamps.append(in_timestamps[ii])
     return out_docs, out_timestamps
+
 
 def remove_by_threshold(in_docs, in_timestamps, thr):
     out_docs = []
@@ -226,11 +188,12 @@ docs_ts, timestamps_ts = remove_by_threshold(docs_ts, timestamps_ts, 1)
 
 # Split test set in 2 halves
 print('splitting test documents in 2 halves...')
-docs_ts_h1 = [[w for i,w in enumerate(doc) if i<=len(doc)/2.0-1] for doc in docs_ts]
-docs_ts_h2 = [[w for i,w in enumerate(doc) if i>len(doc)/2.0-1] for doc in docs_ts]
+docs_ts_h1 = [[w for i, w in enumerate(doc) if i<=len(doc)/2.0-1] for doc in docs_ts]
+docs_ts_h2 = [[w for i, w in enumerate(doc) if i>len(doc)/2.0-1] for doc in docs_ts]
 
 # Getting lists of words and doc_indices
 print('creating lists of words...')
+
 
 def create_list_words(in_docs):
     return [x for y in in_docs for x in y]
@@ -253,6 +216,7 @@ print('getting doc indices...')
 def create_doc_indices(in_docs):
     aux = [[j for i in range(len(doc))] for j, doc in enumerate(in_docs)]
     return [int(x) for y in aux for x in y]
+
 
 doc_indices_tr = create_doc_indices(docs_tr)
 doc_indices_ts = create_doc_indices(docs_ts)
@@ -302,6 +266,7 @@ del doc_indices_ts
 del doc_indices_ts_h1
 del doc_indices_ts_h2
 del doc_indices_va
+
 
 # Write files for LDA C++ code
 def write_lda_file(filename, timestamps_in, time_list_in, bow_in):
@@ -359,6 +324,7 @@ savemat(path_save + 'bow_va_timestamps.mat', {'timestamps': timestamps_va}, do_c
 
 # Split bow intro token/value pairs
 print('splitting bow intro token/value pairs and saving to disk...')
+
 
 def split_bow(bow_in, n_docs):
     indices = [[w for w in bow_in[doc,:].indices] for doc in range(n_docs)]

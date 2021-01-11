@@ -1,27 +1,26 @@
 #/usr/bin/python
-
 from __future__ import print_function
 
-import argparse
-import torch
-import pickle
-import numpy as np
+import warnings
 import os
 import math
 import timeit
+import argparse
+
+import torch
+import pickle
+import numpy as np
 import random
 import sys
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 import scipy.io
-
-
-import data
-
 from sklearn.decomposition import PCA
 from torch import nn, optim
 from torch.nn import functional as F
 
+import data
 from detm import DETM
 from utils import nearest_neighbors, get_topic_coherence
 
@@ -35,7 +34,7 @@ parser.add_argument('--data_path', type=str, default='scripts/split_paragraph_Fa
 parser.add_argument('--emb_path', type=str, default='skipgram/embeddings.txt', help='directory containing embeddings')
 parser.add_argument('--save_path', type=str, default='./results', help='path to save results')
 parser.add_argument('--batch_size', type=int, default=200, help='number of documents in a batch for training') #200
-parser.add_argument('--min_df', type=int, default=30, help='to get the right data..minimum document frequency')
+parser.add_argument('--min_df', type=int, default=15, help='to get the right data..minimum document frequency')
 
 ### model-related arguments
 parser.add_argument('--num_topics', type=int, default=50, help='number of topics')  # 50
@@ -43,7 +42,7 @@ parser.add_argument('--rho_size', type=int, default=300, help='dimension of rho'
 parser.add_argument('--emb_size', type=int, default=300, help='dimension of embeddings')
 parser.add_argument('--t_hidden_size', type=int, default=800, help='dimension of hidden space of q(theta)')  # 800
 parser.add_argument('--theta_act', type=str, default='relu', help='tanh, softplus, relu, rrelu, leakyrelu, elu, selu, glu)')
-parser.add_argument('--train_embeddings', type=int, default=1, help='whether to fix rho or train it')
+parser.add_argument('--train_embeddings', type=int, default=0, help='whether to fix rho or train it')  # fix - match paper
 parser.add_argument('--eta_nlayers', type=int, default=4, help='number of layers for eta')  # 4
 parser.add_argument('--eta_hidden_size', type=int, default=400, help='number of hidden units for rnn')  # 400
 parser.add_argument('--delta', type=float, default=0.005, help='prior variance')
@@ -55,7 +54,7 @@ parser.add_argument('--epochs', type=int, default=3, help='number of epochs to t
 parser.add_argument('--mode', type=str, default='train', help='train or eval model')
 parser.add_argument('--optimizer', type=str, default='adam', help='choice of optimizer')
 parser.add_argument('--seed', type=int, default=2019, help='random seed (default: 1)')
-parser.add_argument('--enc_drop', type=float, default=0.1, help='dropout rate on encoder')
+parser.add_argument('--enc_drop', type=float, default=0.1, help='dropout rate on encoder') # theta dropout
 parser.add_argument('--eta_dropout', type=float, default=0.0, help='dropout rate on rnn for eta')
 parser.add_argument('--clip', type=float, default=2.0, help='gradient clipping')
 parser.add_argument('--nonmono', type=int, default=10, help='number of bad hits allowed')
@@ -131,6 +130,7 @@ args.num_docs_test_2 = len(test_2_tokens)
 test_2_rnn_inp = data.get_rnn_input(
     test_2_tokens, test_2_counts, test_2_times, args.num_times, args.vocab_size, args.num_docs_test)
 
+
 ## get embeddings
 print('Getting embeddings ...', flush=True)
 emb_path = args.emb_path
@@ -155,17 +155,21 @@ print('total bad embedding vectors {}'.format(bad_line_count), flush=True)
 
 embeddings = np.zeros((vocab_size, args.emb_size))  # 10113 x 300
 words_found = 0
+missing_vocab=[]
 for i, word in enumerate(vocab):
     try:
         embeddings[i] = vectors[word]  # each row is a vector
-        words_found += 1  # currently 5992! that's bad. half of the embedding are random.
+        words_found += 1  #
     except KeyError:  # if some element of vocab has not been embedded
         embeddings[i] = np.random.normal(scale=0.6, size=(args.emb_size, ))
+        missing_vocab.append(word)  # a lot of numeric only
 embeddings = torch.from_numpy(embeddings).to(device)
 args.embeddings_dim = embeddings.size()
-if words_found/vocab_size < 0.95:  # currently 5992! that's bad. half of the embedding are random
-    print('low embedding')
-    raise
+
+#  if too many words in vocab are not prefit
+if words_found/vocab_size < 0.95:  # 11,005 / 12,072
+    warnings.warn('WARNING: Too many words in vocab are not found in prefitted embeddings, the quality of the model '
+                  'is compromised!')
 
 print('\n')
 print('=*'*100)
@@ -192,6 +196,11 @@ if args.load_from != '':
         model = torch.load(f)
 else:
     model = DETM(args, embeddings)
+
+if torch.cuda.device_count() > 1: # quynhneo multiple gpus
+  print("Let's use", torch.cuda.device_count(), "GPUs!")
+  model = nn.DataParallel(model)
+
 print('\nDETM architecture: {}'.format(model))
 model.to(device)
 
